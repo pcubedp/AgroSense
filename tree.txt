@@ -1,0 +1,25 @@
+�   App.tsx
+�   index.ts
+�   package-lock.json
+�   package.json
+�   tree.txt
+�   tsconfig.json
+�        
++---assets
+�       adaptive-icon.png
+�       favicon.png
+�       icon.png
+�       splash-icon.png
+�                                
++---src
+    +---navigation
+    �       AppNavigator.tsx
+    �       
+    +---screens
+    �       DashboardScreen.tsx
+    �       HomeScreen.tsx
+    �       ScannerScreen.tsx
+    �       
+    +---services
+            ApiAndDataService.ts
+            
