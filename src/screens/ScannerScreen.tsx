@@ -1,478 +1,383 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Button, Image, ActivityIndicator, Alert, Platform, TouchableOpacity } from 'react-native';
-import { MainTabsProps } from '../navigation/AppNavigator';
-import Icon from 'react-native-vector-icons/Ionicons';
-// Note: We are mocking the image picker and location functionality since
-// actual implementation requires installing external libraries (like react-native-image-picker or expo-image-picker)
-// and proper native configuration.
+import React, { useState } from "react";
+import { View, Text, ScrollView, TextInput, Image, TouchableOpacity, ActivityIndicator, StyleSheet, Alert } from "react-native";
+import Icon from "react-native-vector-icons/Ionicons";
+import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
+import { useLanguage, t, useToast, useData } from "./helpers";
 
-// Mock utility functions for demonstration purposes
-const mockImagePicker = {
-  launchCamera: async () => ({ uri: 'https://placehold.co/600x400/006400/ffffff?text=Camera+Image', base64: 'mock-base64-camera-data' }),
-  launchGallery: async () => ({ uri: 'https://placehold.co/600x400/32CD32/ffffff?text=Gallery+Image', base64: 'mock-base64-gallery-data' }),
-};
-
-const mockLocationService = {
-  fetchAddress: async () => {
-    // Simulate asking for location permission and fetching an address
-    await new Promise(resolve => setTimeout(resolve, 800));
-    return '123 Farm Rd, Rural Town, State 99999';
-  },
-};
-
-// --- TYPE DEFINITIONS ---
-
-// Define the structure for the user's farm details form
-interface FarmDetails {
-  farmArea: string; // Stored as string for TextInput
-  farmAddress: string;
-  fertilizersUsed: string;
-  otherDetails: string;
+let GEMINI_KEY: string | null = null;
+try {
+  const keyFile = require("../gemini-key.json");
+  GEMINI_KEY = keyFile?.api_key || keyFile?.key || null;
+} catch (err) {
+  console.log("gemini-key.json not found or unreadable. Will use mock fallback if API call fails.");
 }
 
-// Define the structure for the AI's initial image analysis (mocked)
-interface InitialAiAnalysis {
-  cropType: string;
-  soilTexture: string;
-  confidenceScore: number;
+function Card({ children, style }: any) {
+  return <View style={[styles.card, style]}>{children}</View>;
 }
 
-// Define the combined data structure sent for the final report generation
-interface FinalReportPayload {
-  imageData: string; // Base64 representation of the image
-  farmDetails: FarmDetails;
-  initialAiAnalysis: InitialAiAnalysis;
-}
+const iniFormPre = { farmArea: "", farmAddress: "", cropHistory: "", plannedCrop: "", sowingDate: "" };
+const iniFormPost = { farmArea: "", farmAddress: "", actualCrop: "", irrigation: "", fertilizersUsed: "", pestUse: "", expectedYield: "" };
 
-// --- MOCK API SERVICE ---
+export default function ScannerScreen({ onBack }) {
+  const { lang, setLang } = useLanguage();
+  const toastCtx = useToast();
+  const { data, setData } = useData();
 
-/**
- * Mocks the initial AI call to analyze the image content.
- * @param base64Image The base64 string of the uploaded image.
- * @returns A promise resolving to the InitialAiAnalysis results.
- */
-const analyzeImageApi = async (base64Image: string): Promise<InitialAiAnalysis> => {
-  // Simulate network delay
-  await new Promise(resolve => setTimeout(resolve, 1500));
-
-  // Mock result based on image content (in a real app, this would be a real API call)
-  console.log(`Mock AI analysis for image: ${base64Image.substring(0, 30)}...`);
-  return {
-    cropType: 'Wheat (Winter Variety)',
-    soilTexture: 'Silty Clay Loam',
-    confidenceScore: 0.92,
-  };
-};
-
-/**
- * Mocks the final API call to generate a complete farm report.
- * @param payload The combined image and form data.
- * @returns A promise that resolves when the report is ready.
- */
-const generateReportApi = async (payload: FinalReportPayload): Promise<void> => {
-  // Simulate network delay for complex report generation
-  await new Promise(resolve => setTimeout(resolve, 2500));
-  console.log('Final Report Payload Sent:', JSON.stringify(payload));
-};
-
-// --- SCREEN COMPONENT ---
-
-const ScannerScreen: React.FC<MainTabsProps<'Scanner'>> = ({ navigation }) => {
-  // State for image handling
-  const [selectedImageUri, setSelectedImageUri] = useState<string | null>(null);
-  const [selectedImageBase64, setSelectedImageBase64] = useState<string | null>(null);
-
-  // State for AI analysis results
-  const [initialAnalysis, setInitialAnalysis] = useState<InitialAiAnalysis | null>(null);
-
-  // State for form data
-  const [farmDetails, setFarmDetails] = useState<FarmDetails>({
-    farmArea: '',
-    farmAddress: 'Fetching location...',
-    fertilizersUsed: '',
-    otherDetails: '',
-  });
-
-  // State for loading indicators
+  const [stage, setStage] = useState<"pre" | "post">("pre");
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isReporting, setIsReporting] = useState(false);
+  const [form, setForm] = useState(iniFormPre);
+  const [submitted, setSubmitted] = useState(false);
   const [isLocationLoading, setIsLocationLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  /**
-   * Handles updating the form state based on input field changes.
-   */
-  const handleInputChange = (field: keyof FarmDetails, value: string) => {
-    setFarmDetails(prev => ({ ...prev, [field]: value }));
-  };
+  function switchStage(s: "pre" | "post") {
+    setStage(s); setSelectedImage(null); setAnalysis(null); setForm(s === "pre" ? iniFormPre : iniFormPost); setSubmitted(false);
+  }
+  function onInput(key: string, val: string) { setForm(f => ({ ...f, [key]: val })); }
 
-  /**
-   * Prompts the user to pick an image either from the camera or gallery.
-   */
-  const pickImage = async (source: 'camera' | 'gallery') => {
+  async function pickImage(fromGallery: boolean) {
+    setSelectedImage(null); setAnalysis(null); setIsAnalyzing(false); setSubmitted(false);
     try {
-      // Reset states upon new image selection
-      setSelectedImageUri(null);
-      setSelectedImageBase64(null);
-      setInitialAnalysis(null);
-      setIsAnalyzing(true);
-
-      let imageResult;
-      if (source === 'camera') {
-        imageResult = await mockImagePicker.launchCamera();
+      let result;
+      if (fromGallery) {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) { toastCtx.show(t("error", lang), "error"); return; }
+        result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.8, base64: false });
       } else {
-        imageResult = await mockImagePicker.launchGallery();
+        const perm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!perm.granted) { toastCtx.show(t("error", lang), "error"); return; }
+        result = await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.8, base64: false });
       }
-
-      if (imageResult) {
-        setSelectedImageUri(imageResult.uri);
-        setSelectedImageBase64(imageResult.base64);
-
-        // Immediately send the image for initial AI analysis
-        const analysis = await analyzeImageApi(imageResult.base64);
-        setInitialAnalysis(analysis);
-
-        // Simultaneously fetch location
-        await fetchLocation();
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setSelectedImage(result.assets[0].uri);
       }
-    } catch (error) {
-      console.error('Image picking error:', error);
-      Alert.alert('Error', 'Failed to pick image.');
-    } finally {
-      setIsAnalyzing(false);
+    } catch (err) {
+      console.warn(err);
+      toastCtx.show(t("error", lang), "error");
     }
-  };
+  }
 
-  /**
-   * Mocks the process of fetching the farm address using device location.
-   */
-  const fetchLocation = async () => {
+  async function fetchLocation() {
+    setIsLocationLoading(true);
     try {
-      setIsLocationLoading(true);
-      const address = await mockLocationService.fetchAddress();
-      setFarmDetails(prev => ({ ...prev, farmAddress: address }));
-    } catch (error) {
-      console.error('Location fetching error:', error);
-      setFarmDetails(prev => ({ ...prev, farmAddress: 'Location Unavailable' }));
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        setForm(f => ({ ...f, farmAddress: "Permission denied" }));
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({});
+      const rev = await Location.reverseGeocodeAsync({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+      const a = rev[0];
+      const addr = `${a.name ?? ""} ${a.street ?? ""}, ${a.city ?? ""} ${a.region ?? ""} ${a.postalCode ?? ""}`.trim();
+      setForm(f => ({ ...f, farmAddress: addr }));
+    } catch (e) {
+      setForm(f => ({ ...f, farmAddress: t("locationUnavailable", lang) }));
     } finally {
       setIsLocationLoading(false);
     }
-  };
+  }
 
-  /**
-   * Handles the submission of the combined data for the final report.
-   */
-  const handleSubmit = async () => {
-    // 1. Basic validation
-    if (!selectedImageBase64 || !initialAnalysis) {
-      Alert.alert('Missing Data', 'Please select and analyze an image before submitting.');
-      return;
-    }
-    if (!farmDetails.farmArea || farmDetails.farmAddress === 'Fetching location...') {
-      Alert.alert('Missing Details', 'Please enter the farm area and ensure the address is available.');
-      return;
-    }
+  async function handleSubmit() {
+    const required = stage === "pre" ? ["farmArea", "farmAddress", "plannedCrop", "sowingDate"] : ["farmArea", "farmAddress", "actualCrop", "irrigation"];
+    for (let f of required) if (!form[f]) { toastCtx.show(t("missingDetails", lang), "error"); setSubmitted(true); return; }
+    if (!selectedImage) { toastCtx.show(t("missingData", lang), "error"); setSubmitted(true); return; }
 
-    setIsReporting(true);
+    setIsAnalyzing(true);
+    setSubmitted(true);
 
-    const finalPayload: FinalReportPayload = {
-      imageData: selectedImageBase64,
-      farmDetails: farmDetails,
-      initialAiAnalysis: initialAnalysis,
+    // Build payload to send
+    const payload = {
+      farmArea: form.farmArea,
+      farmAddress: form.farmAddress,
+      cropHistory: form.cropHistory || null,
+      plannedCrop: form.plannedCrop || null,
+      sowingDate: form.sowingDate || null,
+      actualCrop: form.actualCrop || null,
+      irrigation: form.irrigation || null,
+      fertilizersUsed: form.fertilizersUsed || null,
+      pestUse: form.pestUse || null,
+      expectedYield: form.expectedYield || null,
+      stage,
     };
 
     try {
-      // 2. Send the combined data to the report generation API
-      await generateReportApi(finalPayload);
+      let resultJson: any = null;
 
-      // 3. Navigate to Dashboard upon successful report generation
-      // In a real app, the report data would be passed or saved globally before navigating.
-      Alert.alert('Success', 'Farm data submitted and report generation initiated.');
-      navigation.navigate('Dashboard');
-    } catch (error) {
-      console.error('Report submission error:', error);
-      Alert.alert('Error', 'Failed to generate farm report. Please try again.');
+      if (GEMINI_KEY) {
+        setIsSubmitting(true);
+
+        const promptText = `You are an agricultural assistant. Given this farm data as JSON: ${JSON.stringify(payload)}. 
+Return a JSON ONLY object with keys:
+"cropRecommendation", "profitability","soilHealth","stageSpecificAdvice".
+Use concise values.`;
+
+        const body = {
+          prompt: promptText,
+          temperature: 0.2,
+          maxOutputTokens: 400,
+        };
+
+        const url = "https://generativelanguage.googleapis.com/v1beta2/models/text-bison-001:generate";
+
+        const resp = await fetch(`${url}?key=${GEMINI_KEY}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!resp.ok) {
+          console.warn("Gemini API returned non-OK", resp.status, await resp.text());
+          throw new Error("Gemini API error");
+        }
+
+        const respObj = await resp.json();
+        let textOutput = null;
+        if (respObj?.candidates && respObj.candidates[0]?.content) {
+          const content = respObj.candidates[0].content;
+          textOutput = content.map((c: any) => c?.text || c).join("");
+        } else if (respObj?.candidates && respObj.candidates[0]?.output?.[0]?.content) {
+          textOutput = respObj.candidates[0].output?.[0]?.content;
+        } else if (typeof respObj?.outputText === "string") {
+          textOutput = respObj.outputText;
+        } else {
+          textOutput = JSON.stringify(respObj);
+        }
+
+        try {
+          const jsonMatch = textOutput.match(/\{[\s\S]*\}/);
+          const jsonStr = jsonMatch ? jsonMatch[0] : textOutput;
+          resultJson = JSON.parse(jsonStr);
+        } catch (err) {
+          console.warn("Failed to parse model output as JSON:", err);
+          // fallback: put the full text under 'stageSpecificAdvice'
+          resultJson = {
+            cropRecommendation: null,
+            profitability: null,
+            soilHealth: null,
+            stageSpecificAdvice: textOutput,
+          };
+        }
+      } else {
+        // No key available — use mocked result
+        resultJson = {
+          cropRecommendation: stage === "pre" ? "Maize (Drought tolerant hybrid)" : "Wheat (High-yield hybrid)",
+          profitability: "Moderate to High",
+          soilHealth: "Silty clay, amend with organic matter",
+          stageSpecificAdvice: stage === "pre" ? "Prepare seedbed, apply basal NPK before sowing." : "Scout for pests and apply foliar feed.",
+        };
+      }
+
+      // merge into shared data and also update relevant fields for dashboard
+      const newDataPatch: any = {
+        recommendation: resultJson.cropRecommendation || data?.recommendation,
+        profitability: resultJson.profitability || data?.profitability,
+        soilHealth: resultJson.soilHealth || data?.soilHealth,
+        advice: resultJson.stageSpecificAdvice || data?.advice,
+        cropAnalysis: analysis?.cropType ?? data?.cropAnalysis,
+        scanDate: new Date().toLocaleDateString(),
+      };
+      setData(newDataPatch);
+
+      toastCtx.show(t("reportGenerated", lang), "success");
+    } catch (err) {
+      console.warn("Error during submit:", err);
+      toastCtx.show(t("failReport", lang), "error");
+      // still update with mock so dashboard shows something
+      setData({
+        recommendation: "Fallback crop suggestion",
+        profitability: "Unknown",
+        soilHealth: "Unknown",
+        advice: "No remote advice — try again later.",
+        scanDate: new Date().toLocaleDateString(),
+        cropAnalysis: analysis?.cropType ?? data?.cropAnalysis,
+      });
     } finally {
-      setIsReporting(false);
-      // Optional: Reset state after successful submission
-      // setSelectedImageUri(null);
-      // setInitialAnalysis(null);
-      // setFarmDetails({ farmArea: '', farmAddress: 'Fetching location...', fertilizersUsed: '', otherDetails: '' });
+      setIsAnalyzing(false);
+      setIsSubmitting(false);
+      // navigate back to dashboard (your app uses onBack)
+      onBack();
     }
-  };
+  }
 
-  // Determine if the form can be submitted
-  const isSubmitDisabled = isAnalyzing || isReporting || !initialAnalysis || isLocationLoading;
+  function handleReset() { switchStage(stage); }
+
+  const requiredFields = stage === "pre" ? ["farmArea", "farmAddress", "plannedCrop", "sowingDate"] : ["farmArea", "farmAddress", "actualCrop", "irrigation"];
+  const canSubmit = requiredFields.every(k => !!(form as any)[k]) && !!selectedImage && !isAnalyzing;
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.header}>Farm Scanner</Text>
-        <Text style={styles.subHeader}>Upload a picture of your crop or soil for AI analysis.</Text>
-
-        {/* --- Image Selection Buttons --- */}
-        <View style={styles.buttonGroup}>
-          <TouchableOpacity
-            style={[styles.button, { backgroundColor: '#32CD32' }]} // Lime Green
-            onPress={() => pickImage('camera')}
-            disabled={isAnalyzing}
-          >
-            <Text style={styles.buttonText}>Take Picture</Text>
+    <ScrollView style={{ flex: 1, backgroundColor: "#f6f6f8" }} contentContainerStyle={{ padding: 18 }}>
+      {/* Language & Stage Toggle */}
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <TouchableOpacity onPress={() => setLang(lang === "en" ? "hi" : "en")}
+          style={styles.langTog}>
+          <Text style={styles.langText}>{t("language", lang)}: {lang === "en" ? "EN" : "HI"}</Text>
+        </TouchableOpacity>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center" }}>
+            <TouchableOpacity style={[styles.pill, stage === "pre" && styles.pillActive]} onPress={() => switchStage("pre")}>
+            <Text style={styles.pillText(stage === "pre")}>{t("pre", lang)}</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.button, { backgroundColor: '#006400' }]} // Dark Green
-            onPress={() => pickImage('gallery')}
-            disabled={isAnalyzing}
-          >
-            <Text style={styles.buttonText}>Upload from Gallery</Text>
+          <TouchableOpacity style={[styles.pill, stage === "post" && styles.pillActive]} onPress={() => switchStage("post")}>
+            <Text style={styles.pillText(stage === "post")}>{t("post", lang)}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <Text style={styles.header}>{t("scannerHeader", lang)}</Text>
+      <Text style={styles.subHeader}>{t("subHeader", lang)}</Text>
+
+      {/* --- Upload + Preview Card --- */}
+      <Card>
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <TouchableOpacity style={styles.uploadBtn} onPress={() => pickImage(false)}>
+            <Icon name="camera" color="#fff" size={23} /><Text style={styles.uploadBtnText}>{t("takePhoto", lang)}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.uploadBtn, { backgroundColor: "#FF8C00" }]} onPress={() => pickImage(true)}>
+            <Icon name="image" color="#fff" size={22} /><Text style={styles.uploadBtnText}>{t("uploadFromGallery", lang)}</Text>
           </TouchableOpacity>
         </View>
 
-        {/* --- Image Preview and Initial Analysis --- */}
-        {selectedImageUri && (
-          <View style={styles.previewContainer}>
-            <Image source={{ uri: selectedImageUri }} style={styles.imagePreview} />
+        {selectedImage &&
+          <View style={{ alignItems: "center", marginTop: 15 }}>
+            <Image source={{ uri: selectedImage }} style={styles.imgPreview} />
+          </View>
+        }
 
-            {isAnalyzing ? (
-              <View style={styles.loadingBox}>
-                <ActivityIndicator size="large" color="#006400" />
-                <Text style={styles.loadingText}>Analyzing Image...</Text>
-              </View>
-            ) : initialAnalysis ? (
-              <View style={styles.analysisBox}>
-                <Text style={styles.analysisTitle}>AI Image Analysis Complete</Text>
-                <Text style={styles.analysisText}>Crop Type: <Text style={styles.analysisResult}>{initialAnalysis.cropType}</Text></Text>
-                <Text style={styles.analysisText}>Soil Texture: <Text style={styles.analysisResult}>{initialAnalysis.soilTexture}</Text></Text>
-                <Text style={styles.analysisText}>Confidence: <Text style={styles.analysisResult}>{(initialAnalysis.confidenceScore * 100).toFixed(1)}%</Text></Text>
-              </View>
-            ) : null}
+        {isAnalyzing && (
+          <View style={{ alignItems: "center", marginVertical: 12 }}>
+            <ActivityIndicator color="#006400" size="large" />
+            <Text style={{ color: "#006400", fontWeight: "bold", fontSize: 17 }}>{t("analyzing", lang)}</Text>
           </View>
         )}
+      </Card>
 
-        {/* --- Farm Details Form --- */}
-        <Text style={styles.formTitle}>Farm Details (Required for Report)</Text>
+      {/* --- Form Input Card --- */}
+      <Card>
+        <Text style={styles.formTitle}>{t("reviewDetails", lang)}</Text>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Farm Area (e.g., 50 acres)"
-          keyboardType="numeric"
-          value={farmDetails.farmArea}
-          onChangeText={(text) => handleInputChange('farmArea', text)}
-        />
+        <TextInput style={styles.input} placeholder={t("farmArea", lang)} value={form.farmArea}
+          onChangeText={v => onInput("farmArea", v)} keyboardType="numeric" />
 
-        {/* Address Field */}
-        <View style={styles.addressContainer}>
-          <TextInput
-            style={[styles.input, styles.addressInput]}
-            placeholder="Farm Address"
-            value={farmDetails.farmAddress}
-            onChangeText={(text) => handleInputChange('farmAddress', text)}
-            editable={!isLocationLoading}
-          />
-          <TouchableOpacity
-            style={styles.locationButton}
-            onPress={fetchLocation}
-            disabled={isLocationLoading}
-          >
-            {isLocationLoading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Icon name="locate-sharp" size={20} color="#fff" />
-            )}
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <TextInput style={[styles.input, { flex: 1 }]} placeholder={t("farmAddress", lang)} value={form.farmAddress}
+            onChangeText={v => onInput("farmAddress", v)} />
+          <TouchableOpacity style={styles.locBtn} onPress={fetchLocation}>
+            <Icon name="locate-sharp" size={20} color="#fff" />
           </TouchableOpacity>
         </View>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Current Fertilizers Used (e.g., NPK 10-10-10, Urea)"
-          value={farmDetails.fertilizersUsed}
-          onChangeText={(text) => handleInputChange('fertilizersUsed', text)}
-        />
+        {stage === "pre" ? (
+          <>
+            <TextInput style={styles.input} placeholder={t("cropHistory", lang)} value={form.cropHistory} onChangeText={v => onInput("cropHistory", v)} />
+            <TextInput style={styles.input} placeholder={t("plannedCrop", lang)} value={form.plannedCrop} onChangeText={v => onInput("plannedCrop", v)} />
+            <TextInput style={styles.input} placeholder={t("sowingDate", lang)} value={form.sowingDate} onChangeText={v => onInput("sowingDate", v)} />
+          </>
+        ) : (
+          <>
+            <TextInput style={styles.input} placeholder={t("actualCrop", lang)} value={form.actualCrop} onChangeText={v => onInput("actualCrop", v)} />
+            <TextInput style={styles.input} placeholder={t("irrigation", lang)} value={form.irrigation} onChangeText={v => onInput("irrigation", v)} />
+            <TextInput style={styles.input} placeholder={t("fertilizersUsed", lang)} value={form.fertilizersUsed} onChangeText={v => onInput("fertilizersUsed", v)} />
+            <TextInput style={styles.input} placeholder={t("pestUse", lang)} value={form.pestUse} onChangeText={v => onInput("pestUse", v)} />
+            <TextInput style={styles.input} placeholder={t("expectedYield", lang)} value={form.expectedYield} onChangeText={v => onInput("expectedYield", v)} />
+          </>
+        )}
+      </Card>
 
-        <TextInput
-          style={[styles.input, styles.multilineInput]}
-          placeholder="Other Farm-Related Details (e.g., last harvest date, irrigation method)"
-          value={farmDetails.otherDetails}
-          onChangeText={(text) => handleInputChange('otherDetails', text)}
-          multiline
-          numberOfLines={4}
-        />
-
-        {/* --- Submit Button --- */}
-        <TouchableOpacity
-          style={[styles.submitButton, isSubmitDisabled && styles.submitButtonDisabled]}
-          onPress={handleSubmit}
-          disabled={isSubmitDisabled}
-        >
-          {isReporting ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.submitButtonText}>Generate Comprehensive Report</Text>
-          )}
+      {/* --- Button Bar --- */}
+      <View style={{ flexDirection: "row", gap: 15, marginVertical: 12, flexWrap: "wrap" }}>
+        <TouchableOpacity style={[
+          styles.mainActionBtn,
+          { backgroundColor: canSubmit ? "#FF8C00" : "#f5c095", flex: 1 }
+        ]}
+          onPress={handleSubmit} disabled={!canSubmit || isAnalyzing}>
+          {isAnalyzing ? <ActivityIndicator color="#fff" /> : <Icon name="analytics-outline" color="#fff" size={22} />}
+          <Text style={styles.actionText}>{t("generateReport", lang)}</Text>
         </TouchableOpacity>
 
-        {isReporting && <Text style={styles.reportingText}>Generating report and calculating profits...</Text>}
+        <TouchableOpacity style={[styles.mainActionBtn, { backgroundColor: "#888", flex: 1 }]} onPress={handleReset} disabled={isAnalyzing}>
+          <Icon name="close-circle-outline" color="#fff" size={20} /><Text style={styles.actionText}>{t("resetForm", lang)}</Text>
+        </TouchableOpacity>
 
-        <View style={{ height: 50 }} />
-      </ScrollView>
-    </View>
+        <TouchableOpacity style={[styles.mainActionBtn, { backgroundColor: "#295", flex: 1 }]} onPress={onBack}>
+          <Icon name="arrow-back" color="#fff" size={20} /><Text style={styles.actionText}>{t("dashboard", lang)}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {submitted && !canSubmit &&
+        <Text style={{ color: "#d00", fontWeight: "bold", marginBottom: 10 }}>{t("fillFormPrompt", lang)}</Text>
+      }
+
+      {/* --- Analysis Result Card --- */}
+      {analysis && (
+        <Card style={{ backgroundColor: "#e6ffe6" }}>
+          <Text style={{ fontWeight: "bold", fontSize: 18, marginBottom: 7 }}>{t("aiComplete", lang)}</Text>
+          <Text>{t("cropType", lang)}: <Text style={{ fontWeight: "bold", color: "#006400" }}>{analysis.cropType}</Text></Text>
+          <Text>{t("soilTexture", lang)}: <Text style={{ fontWeight: "bold", color: "#295" }}>{analysis.soilTexture}</Text></Text>
+          <Text style={{ marginVertical: 4 }}>{t("confidence", lang)}:
+            <Text style={{ fontWeight: "bold", color: "#006400" }}> {(analysis.confidenceScore * 100).toFixed(1)}%</Text>
+          </Text>
+
+          <View style={{ height: 12, width: "100%", backgroundColor: "#eee", borderRadius: 8, marginVertical: 7 }}>
+            <View style={{
+              width: `${(analysis.confidenceScore * 100)}%`, height: "100%",
+              backgroundColor: analysis.confidenceScore > 0.8 ? "#32CD32" : "#FFD700", borderRadius: 8
+            }} />
+          </View>
+
+          {analysis.confidenceScore < 0.8 &&
+            <View style={{ marginTop: 5, backgroundColor: "#fff8e1", padding: 7, borderRadius: 6 }}>
+              <Text style={{ color: "#c79005", fontWeight: "bold" }}>
+                {lang === "en"
+                  ? "Confidence low. Please retake photo."
+                  : "विश्वास कम है। कृपया फिर से फोटो लें।"}</Text>
+            </View>}
+        </Card>
+      )}
+
+      <View style={{ height: 42 }} />
+    </ScrollView>
   );
-};
+}
 
-// --- STYLING ---
+// --- Styles ---
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F5',
-  },
-  scrollContent: {
-    padding: 20,
-  },
-  header: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#006400',
-    marginBottom: 5,
-  },
-  subHeader: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 20,
-  },
-  buttonGroup: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 25,
-  },
-  button: {
-    flex: 1,
-    padding: 15,
-    borderRadius: 10,
-    marginHorizontal: 5,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  buttonText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  previewContainer: {
-    marginBottom: 25,
-    borderRadius: 12,
-    backgroundColor: '#fff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-    overflow: 'hidden',
-  },
-  imagePreview: {
-    width: '100%',
-    height: 200,
-    resizeMode: 'cover',
-  },
-  loadingBox: {
-    padding: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loadingText: {
-    marginTop: 10,
-    fontSize: 14,
-    color: '#006400',
-    fontWeight: '500',
-  },
-  analysisBox: {
-    padding: 15,
-    backgroundColor: '#e6ffe6', // Lightest green background for results
-    borderTopWidth: 1,
-    borderTopColor: '#00640020',
-  },
-  analysisTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#006400',
-    marginBottom: 5,
-  },
-  analysisText: {
-    fontSize: 14,
-    color: '#333',
-    lineHeight: 20,
-  },
-  analysisResult: {
-    fontWeight: '600',
-    color: '#004d00',
-  },
-  formTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 15,
-    marginTop: 10,
-  },
-  input: {
-    backgroundColor: '#fff',
-    padding: 15,
-    borderRadius: 8,
-    fontSize: 16,
-    marginBottom: 15,
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  multilineInput: {
-    height: 100,
-    textAlignVertical: 'top',
-  },
-  addressContainer: {
-    flexDirection: 'row',
-    marginBottom: 15,
-  },
-  addressInput: {
-    flex: 1,
-    marginBottom: 0, // Override default margin
-    borderTopRightRadius: 0,
-    borderBottomRightRadius: 0,
-  },
-  locationButton: {
-    backgroundColor: '#1E90FF', // Dodger Blue for location action
-    paddingHorizontal: 15,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderTopRightRadius: 8,
-    borderBottomRightRadius: 8,
-    marginLeft: -1, // Overlap border for clean look
-  },
-  submitButton: {
-    backgroundColor: '#FF8C00', // Dark Orange
-    padding: 18,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 5,
-    elevation: 5,
-  },
-  submitButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  submitButtonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 18,
-  },
-  reportingText: {
-    marginTop: 15,
-    textAlign: 'center',
-    color: '#FF8C00',
-    fontWeight: '500',
-  }
-});
+  card: { backgroundColor: "#fff", borderRadius: 18, padding: 16, marginBottom: 20, shadowColor: "#000", shadowOpacity: 0.09, shadowRadius: 10, elevation: 4 },
+  langTog: { backgroundColor: "#32CD32", borderRadius: 13, paddingHorizontal: 16, paddingVertical: 10 },
+  langText: { color: "#fff", fontWeight: "bold", fontSize: 17 },
+  pill: {
+  paddingVertical: 10,
+  paddingHorizontal: 20,
+  borderRadius: 25,
+  borderWidth: 1,
+  borderColor: "#006400",
+  marginLeft: 8,
+  marginVertical: 5,           // <-- NEW
+  backgroundColor: "#fff",
 
-export default ScannerScreen;
+  minWidth: 120,               // <-- NEW (prevents cut on small screens)
+  alignItems: "center",        // <-- NEW
+  justifyContent: "center"     // <-- NEW
+  },
+  pillActive: { backgroundColor: "#006400", borderColor: "#006400" },
+  pillText: (active) => ({
+      color: active ? "#fff" : "#006400",
+      fontWeight: "bold",
+      fontSize: 15,
+      textAlign: "center"
+    }),
+  header: { fontSize: 27, color: "#006400", fontWeight: "bold", marginBottom: 8 },
+  subHeader: { fontSize: 17, color: "#666", marginBottom: 15 },
+  uploadBtn: { flexDirection: "row", alignItems: "center", backgroundColor: "#32CD32", borderRadius: 13, paddingVertical: 13, paddingHorizontal: 16, elevation: 2, flex: 1, marginBottom: 2, justifyContent: 'center' },
+  uploadBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16, marginLeft: 7 },
+  imgPreview: { width: "100%", maxWidth: 400, height: 170, borderRadius: 15, marginTop: 7, marginBottom: 7, resizeMode: "cover", borderWidth: 2, borderColor: "#32CD32" },
+  formTitle: { fontWeight: "bold", fontSize: 19, marginBottom: 7, color: "#295" },
+  input: { backgroundColor: "#f7f7f7", borderRadius: 9, padding: 14, marginBottom: 12, fontSize: 16, borderWidth: 1, borderColor: "#ccc" },
+  mainActionBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: "#FF8C00", borderRadius: 13, paddingVertical: 14, paddingHorizontal: 10, flex: 1, marginBottom: 6 },
+  actionText: { color: "#fff", fontWeight: "bold", fontSize: 16, marginLeft: 6 },
+  locBtn: { backgroundColor: "#1E90FF", marginLeft: 8, paddingHorizontal: 12, justifyContent: "center", borderRadius: 8 },
+});

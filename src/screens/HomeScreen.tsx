@@ -1,108 +1,60 @@
+// src/screens/HomeScreen.tsx
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Image, SafeAreaView, Platform } from 'react-native';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { HomeStackProps, RootTabParamList } from '../navigation/AppNavigator';
+import { useI18n } from '../i18n';
 
-// Define the type for the HomeScreen navigation props
-// It uses the RootStackParamList because it is part of the main stack, 
-// but we need the navigation object to potentially go back to tabs.
 type HomeScreenProps = HomeStackProps<'Home'>;
 
-/**
- * A simple landing screen accessible from the top-right Home icon.
- * It provides a welcome message and quick navigation shortcuts to the main tabs.
- */
 const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
-  /**
-   * Helper function to navigate directly to a specific tab screen.
-   * We navigate to 'MainTabs' first, and then specify the target screen name
-   * within the RootTabParamList as parameters.
-   */
-  const goToTab = (screenName: keyof RootTabParamList) => {
-    navigation.navigate('MainTabs', {
-      screen: screenName,
-    });
-  };
+  const { t, lang, setLang } = useI18n() as any;
+  const goToTab = (screenName: keyof RootTabParamList) => navigation.navigate('MainTabs', { screen: screenName });
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.welcomeText}>Welcome, Farmer!</Text>
-      <Text style={styles.subText}>
-        Your AI-powered farm management assistant.
-      </Text>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.headerBox}>
+        <Text style={styles.greetingText}>👋 {lang === 'en' ? 'Welcome' : 'नमस्ते'}, Farmer</Text>
+        <Text style={styles.greetingSub}>{t('subHeader')}</Text>
+      </View>
 
-      {/* Quick link button to the Scanner Tab */}
-      <TouchableOpacity
-        style={[styles.button, styles.scannerButton]}
-        onPress={() => goToTab('Scanner')}
-      >
-        <Text style={styles.buttonText}>Start Farm Scan</Text>
+      <Image source={{ uri: 'https://placehold.co/1200x600/2d6a4f/ffffff?text=AgroSense' }} style={styles.bannerImage} resizeMode="cover" />
+
+      <View style={styles.cards}>
+        <TouchableOpacity style={[styles.card, styles.cardPrimary]} activeOpacity={0.9} onPress={() => goToTab('Scanner')}>
+          <Ionicons name="scan-circle" size={42} color="#fff" />
+          <Text style={styles.cardTitle}>{t('takePhoto')}</Text>
+          <Text style={styles.cardDesc}>{t('subHeader')}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.card, styles.cardSecondary]} activeOpacity={0.9} onPress={() => goToTab('Dashboard')}>
+          <MaterialCommunityIcons name="chart-bell-curve" size={42} color="#fff" />
+          <Text style={styles.cardTitle}>{t('viewDashboard')}</Text>
+          <Text style={styles.cardDesc}>{t('recommendations')}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity style={styles.langToggle} onPress={() => setLang(lang === 'en' ? 'hi' : 'en')}>
+        <Text style={styles.langToggleText}>{t('language')}: {lang === 'en' ? 'English' : 'हिन्दी'}</Text>
       </TouchableOpacity>
-
-      {/* Quick link button to the Dashboard Tab */}
-      <TouchableOpacity
-        style={[styles.button, styles.dashboardButton]}
-        onPress={() => goToTab('Dashboard')}
-      >
-        <Text style={styles.buttonText}>View Farm Dashboard</Text>
-      </TouchableOpacity>
-
-      <Text style={styles.footerText}>
-        Navigate using the tabs below or the links above.
-      </Text>
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F5',
-    alignItems: 'center',
-    padding: 20,
-    paddingTop: 50, // Added padding for better visual spacing
-  },
-  welcomeText: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#006400', // Dark Green
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  subText: {
-    fontSize: 18,
-    color: '#666',
-    marginBottom: 40,
-    textAlign: 'center',
-  },
-  button: {
-    width: '90%',
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  scannerButton: {
-    backgroundColor: '#32CD32', // Lime Green
-  },
-  dashboardButton: {
-    backgroundColor: '#FF8C00', // Dark Orange
-  },
-  buttonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 18,
-  },
-  footerText: {
-    position: 'absolute',
-    bottom: 20,
-    fontSize: 14,
-    color: '#999',
-  }
+  container: { flex: 1, backgroundColor: '#f4faf6', paddingHorizontal: 18, paddingTop: Platform.OS === 'ios' ? 18 : 12 },
+  headerBox: { marginBottom: 16 },
+  greetingText: { fontSize: 28, fontWeight: '800', color: '#174c2f' },
+  greetingSub: { color: '#51636a', marginTop: 6, fontSize: 15 },
+  bannerImage: { width: '100%', height: 160, borderRadius: 14, marginBottom: 18 },
+  cards: { flexDirection: 'column', gap: 14 },
+  card: { borderRadius: 14, padding: 18, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 10, elevation: 3 },
+  cardPrimary: { backgroundColor: '#1b6b39' },
+  cardSecondary: { backgroundColor: '#ef7b23' },
+  cardTitle: { color: '#fff', fontSize: 20, fontWeight: '800', marginTop: 10 },
+  cardDesc: { color: '#f7f7f7', marginTop: 6, opacity: 0.95 },
+  langToggle: { position: 'absolute', bottom: 18, alignSelf: 'center' },
+  langToggleText: { color: '#666' },
 });
 
 export default HomeScreen;
